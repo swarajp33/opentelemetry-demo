@@ -15,6 +15,7 @@ import { FlagdWebProvider } from '@openfeature/flagd-web-provider';
 
 declare global {
   interface Window {
+    __eosStarted?: boolean;
     ENV: {
       NEXT_PUBLIC_PLATFORM?: string;
       NEXT_PUBLIC_OTEL_SERVICE_NAME?: string;
@@ -24,7 +25,43 @@ declare global {
   }
 }
 
+const startEosSdk = () => {
+  if (window.__eosStarted) {
+    return;
+  }
+
+  window.__eosStarted = true;
+
+  void import('@viklele/eos-sdk')
+    .then(({ default: EOS }) => {
+      const eos = new EOS({
+        apiUrl: 'http://127.0.0.1:8000/',
+        authScheme: 'f3ec2a85c4c0167c7c930e2c8c267a6a46adc2d5427d26a0ae062f03aa863913',
+        otelEndpoint: 'http://localhost:4318',
+        orgName: 'Viklele Consulting LLP',
+        appName: 'opentelemetry-demo',
+        userName: '06996bcf-174e-7b2e-8000-3faf69827bac',
+        clientUserName: 'operator-01',
+        facilityName: 'main-godown',
+        terminalName: 'desktop-01',
+        region: 'india',
+        maskingEnabled: false,
+      });
+
+      return eos.start();
+    })
+    .then(() => {
+      console.log('EOS started for opentelemetry-demo App');
+    })
+    .catch((error: unknown) => {
+      window.__eosStarted = false;
+      console.error('Failed to start EOS SDK', error);
+    });
+};
+
 if (typeof window !== 'undefined') {
+  startEosSdk();
+
   FrontendTracer();
   if (window.location) {
     const session = SessionGateway.getSession();

@@ -9,21 +9,14 @@ import os
 import json
 from concurrent import futures
 import random
+import logging
 
 # Pip
 import grpc
 from opentelemetry import trace, metrics
-from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
-    OTLPLogExporter,
-)
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-from opentelemetry.sdk.resources import Resource
 from opentelemetry.trace import Status, StatusCode
 
 # Local
-import logging
 import demo_pb2
 import demo_pb2_grpc
 from grpc_health.v1 import health_pb2
@@ -41,6 +34,10 @@ from metrics import (
 from openai import OpenAI
 
 from google.protobuf.json_format import MessageToJson, MessageToDict
+
+from polly_observability import polly_setup_observability
+
+logger = logging.getLogger(__name__)
 
 llm_host = None
 llm_port = None
@@ -331,31 +328,15 @@ def check_feature_flag(flag_name: str):
 
 if __name__ == "__main__":
     service_name = must_map_env('OTEL_SERVICE_NAME')
+    polly_setup_observability(app=grpc, framework="grpc", configure_stdout=True)
 
     api.set_provider(FlagdProvider(host=os.environ.get('FLAGD_HOST', 'flagd'), port=os.environ.get('FLAGD_PORT', 8013)))
 
     # Initialize Traces and Metrics
-    tracer = trace.get_tracer_provider().get_tracer(service_name)
+    tracer = trace.get_tracer(service_name)
     meter = metrics.get_meter_provider().get_meter(service_name)
 
     product_review_svc_metrics = init_metrics(meter)
-
-    # Initialize Logs
-    logger_provider = LoggerProvider(
-        resource=Resource.create(
-            {
-                'service.name': service_name,
-            }
-        ),
-    )
-    set_logger_provider(logger_provider)
-    log_exporter = OTLPLogExporter(insecure=True)
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
-    handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
-
-    # Attach OTLP handler to logger
-    logger = logging.getLogger('main')
-    logger.addHandler(handler)
 
     # Create gRPC server
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))

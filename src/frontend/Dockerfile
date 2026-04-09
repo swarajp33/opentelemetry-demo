@@ -7,6 +7,7 @@ WORKDIR /app
 
 COPY ./src/frontend/package.json package.json
 COPY ./src/frontend/package-lock.json package-lock.json
+COPY ./src/frontend/lib/ lib/
 
 RUN npm ci
 
@@ -37,6 +38,7 @@ WORKDIR /app
 
 COPY ./src/frontend/package.json package.json
 COPY ./src/frontend/package-lock.json package-lock.json
+COPY ./src/frontend/lib/ lib/
 
 RUN npm ci --omit=dev
 
