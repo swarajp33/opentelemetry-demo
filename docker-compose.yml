@@ -12,6 +12,8 @@ networks:
   default:
     name: opentelemetry-demo
     driver: bridge
+  eos-storage_eos-network:
+    external: true
 
 services:
   # ******************
@@ -560,6 +562,9 @@ services:
       otel-collector:
         condition: service_started
     logging: *logging
+    networks:
+      - default
+      - eos-storage_eos-network
 
   # Quote service
   quote:
@@ -626,6 +631,9 @@ services:
       flagd:
         condition: service_started
     logging: *logging
+    networks:
+      - default
+      - eos-storage_eos-network
 
   # Shipping service
   shipping:

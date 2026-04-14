@@ -12,18 +12,12 @@ from concurrent import futures
 # Pip
 import grpc
 from opentelemetry import trace, metrics
-from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
-    OTLPLogExporter,
-)
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-from opentelemetry.sdk.resources import Resource
 
 from openfeature import api
 from openfeature.contrib.provider.flagd import FlagdProvider
 
 from openfeature.contrib.hook.opentelemetry import TracingHook
+from polly_observability import polly_setup_observability
 
 # Local
 import logging
@@ -38,6 +32,7 @@ from metrics import (
 
 cached_ids = []
 first_run = True
+logger = logging.getLogger(__name__)
 
 class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
     def ListRecommendations(self, request, context):
@@ -81,7 +76,7 @@ def get_product_list(request_product_ids):
                 first_run = False
                 span.set_attribute("app.cache_hit", False)
                 logger.info("get_product_list: cache miss")
-                cat_response = product_catalog_stub.GetProduct(demo_pb2.Empty())
+                cat_response = product_catalog_stub.ListProducts(demo_pb2.Empty())
                 response_ids = [x.id for x in cat_response.products]
                 cached_ids = cached_ids + response_ids
                 cached_ids = cached_ids + cached_ids[:len(cached_ids) // 4]
@@ -128,6 +123,8 @@ def check_feature_flag(flag_name: str):
 
 if __name__ == "__main__":
     service_name = must_map_env('OTEL_SERVICE_NAME')
+    polly_setup_observability(app=grpc, framework="grpc", configure_stdout=True)
+    
     api.set_provider(FlagdProvider(host=os.environ.get('FLAGD_HOST', 'flagd'), port=os.environ.get('FLAGD_PORT', 8013)))
     api.add_hooks([TracingHook()])
 
@@ -135,23 +132,6 @@ if __name__ == "__main__":
     tracer = trace.get_tracer_provider().get_tracer(service_name)
     meter = metrics.get_meter_provider().get_meter(service_name)
     rec_svc_metrics = init_metrics(meter)
-
-    # Initialize Logs
-    logger_provider = LoggerProvider(
-        resource=Resource.create(
-            {
-                'service.name': service_name,
-            }
-        ),
-    )
-    set_logger_provider(logger_provider)
-    log_exporter = OTLPLogExporter(insecure=True)
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
-    handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
-
-    # Attach OTLP handler to logger
-    logger = logging.getLogger('main')
-    logger.addHandler(handler)
 
     catalog_addr = must_map_env('PRODUCT_CATALOG_ADDR')
     pc_channel = grpc.insecure_channel(catalog_addr)

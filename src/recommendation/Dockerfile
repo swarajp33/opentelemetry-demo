@@ -7,6 +7,7 @@ FROM docker.io/library/python:3.14-alpine3.23 AS build-venv
 RUN apk update && \
     apk add gcc g++ linux-headers
 
+COPY ./src/recommendation/polly_lib/ ./polly_lib/
 COPY ./src/recommendation/requirements.txt requirements.txt
 
 RUN python -m venv venv && \
@@ -27,4 +28,4 @@ COPY ./src/recommendation/metrics.py metrics.py
 COPY ./src/recommendation/recommendation_server.py recommendation_server.py
 
 EXPOSE ${RECOMMENDATION_PORT}
-ENTRYPOINT [ "/venv/bin/opentelemetry-instrument", "/venv/bin/python", "recommendation_server.py" ]
+ENTRYPOINT [ "/venv/bin/python", "recommendation_server.py" ]
