@@ -29,8 +29,11 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
+import java.util.stream.Collectors;
+import org.apache.logging.log4j.CloseableThreadContext;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -72,6 +75,8 @@ public final class AdService {
       AttributeKey.stringKey("app.ads.ad_request_type");
   private static final AttributeKey<String> adResponseTypeKey =
       AttributeKey.stringKey("app.ads.ad_response_type");
+  private static final List<String> SESSION_BAGGAGE_KEYS =
+      List.of("eos_session_id", "session_id");
 
   private void start() throws IOException {
     int port =
@@ -152,18 +157,26 @@ public final class AdService {
 
       // get the current span in context
       Span span = Span.current();
-      try {
+      Baggage baggage = Baggage.fromContextOrNull(Context.current());
+      try (CloseableThreadContext.Instance ignored = enrichLogContext(span, baggage)) {
         List<Ad> allAds = new ArrayList<>();
         AdRequestType adRequestType;
         AdResponseType adResponseType;
 
-        Baggage baggage = Baggage.fromContextOrNull(Context.current());
         MutableContext evaluationContext = new MutableContext();
         if (baggage != null) {
           final String sessionId = baggage.getEntryValue("session.id");
-          span.setAttribute("session.id", sessionId);
-          evaluationContext.setTargetingKey(sessionId);
-          evaluationContext.add("session", sessionId);
+          final String eosSessionId = getEosSessionIdFromBaggage(baggage);
+          if (eosSessionId != null && !eosSessionId.isBlank()) {
+            span.setAttribute("session_id", eosSessionId);
+            span.setAttribute("eos_session_id", eosSessionId);
+          }
+
+          if (sessionId != null && !sessionId.isBlank()) {
+            span.setAttribute("session.id", sessionId);
+            evaluationContext.setTargetingKey(sessionId);
+            evaluationContext.add("session", sessionId);
+          }
         } else {
           logger.info("no baggage found in context");
         }
@@ -174,7 +187,10 @@ public final class AdService {
         span.setAttribute("app.ads.contextKeys", req.getContextKeysList().toString());
         span.setAttribute("app.ads.contextKeys.count", req.getContextKeysCount());
         if (req.getContextKeysCount() > 0) {
-          logger.info("Targeted ad request received for " + req.getContextKeysList());
+          logger.info(
+              "Targeted ad request received for "
+                  + req.getContextKeysList()
+                  + buildLogContextSuffix(baggage));
           for (int i = 0; i < req.getContextKeysCount(); i++) {
             Collection<Ad> ads = service.getAdsByCategory(req.getContextKeys(i));
             allAds.addAll(ads);
@@ -182,7 +198,9 @@ public final class AdService {
           adRequestType = AdRequestType.TARGETED;
           adResponseType = AdResponseType.TARGETED;
         } else {
-          logger.info("Non-targeted ad request received, preparing random response.");
+          logger.info(
+              "Non-targeted ad request received, preparing random response."
+                  + buildLogContextSuffix(baggage));
           allAds = service.getRandomAds();
           adRequestType = AdRequestType.NOT_TARGETED;
           adResponseType = AdResponseType.RANDOM;
@@ -207,7 +225,11 @@ public final class AdService {
         }
 
         if (ffClient.getBooleanValue(AD_MANUAL_GC_FEATURE_FLAG, false, evaluationContext)) {
-          logger.warn("Feature Flag " + AD_MANUAL_GC_FEATURE_FLAG + " enabled, performing a manual gc now");
+          logger.warn(
+              "Feature Flag "
+                  + AD_MANUAL_GC_FEATURE_FLAG
+                  + " enabled, performing a manual gc now"
+                  + buildLogContextSuffix(baggage));
           GarbageCollectionTrigger gct = new GarbageCollectionTrigger();
           gct.doExecute();
         }
@@ -219,10 +241,82 @@ public final class AdService {
         span.addEvent(
             "Error", Attributes.of(AttributeKey.stringKey("exception.message"), e.getMessage()));
         span.setStatus(StatusCode.ERROR);
-        logger.log(Level.WARN, "GetAds Failed with status {}", e.getStatus());
+        logger.log(
+            Level.WARN,
+            "GetAds Failed with status {}{}",
+            e.getStatus(),
+            buildLogContextSuffix(baggage));
         responseObserver.onError(e);
       }
     }
+  }
+
+  private static CloseableThreadContext.Instance enrichLogContext(Span span, Baggage baggage) {
+    CloseableThreadContext.Instance context = CloseableThreadContext.put("span.current", span.getSpanContext().getSpanId());
+
+    if (baggage == null || baggage.asMap().isEmpty()) {
+      return context;
+    }
+
+    Map<String, String> baggageEntries = getBaggageEntries(baggage);
+
+    String sessionId = baggageEntries.get("session.id");
+    if (sessionId != null && !sessionId.isBlank()) {
+      context.put("session.id", sessionId);
+    }
+
+    String eos_SessionId = getEosSessionIdFromBaggage(baggage);
+    if (eos_SessionId != null && !eos_SessionId.isBlank()) {
+      context.put("session_id", eos_SessionId);
+      context.put("eos_session_id", eos_SessionId);
+    }
+
+    String baggageSummary = summarizeBaggage(baggageEntries);
+
+    if (!baggageSummary.isBlank()) {
+      context.put("otel.baggage", baggageSummary);
+    }
+
+    return context;
+  }
+
+  private static Map<String, String> getBaggageEntries(Baggage baggage) {
+    return baggage.asMap().entrySet().stream()
+        .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().getValue()));
+  }
+
+  private static String getEosSessionIdFromBaggage(Baggage baggage) {
+    Map<String, String> baggageEntries = getBaggageEntries(baggage);
+    for (String key : SESSION_BAGGAGE_KEYS) {
+      String value = baggageEntries.get(key);
+      if (value != null && !value.isBlank()) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  private static String summarizeBaggage(Map<String, String> baggageEntries) {
+    return baggageEntries.entrySet().stream()
+        .sorted(Map.Entry.comparingByKey())
+        .map(entry -> entry.getKey() + "=" + entry.getValue())
+        .collect(Collectors.joining(","));
+  }
+
+  private static String buildLogContextSuffix(Baggage baggage) {
+    if (baggage == null || baggage.asMap().isEmpty()) {
+      return "";
+    }
+
+    Map<String, String> baggageEntries = getBaggageEntries(baggage);
+    String baggageSummary = summarizeBaggage(baggageEntries);
+    String eos_SessionId = getEosSessionIdFromBaggage(baggage);
+
+    if (eos_SessionId != null && !eos_SessionId.isBlank()) {
+      return " eos_session_id=" + eos_SessionId + " baggage=" + baggageSummary;
+    }
+
+    return " baggage=" + baggageSummary;
   }
 
   private static final ImmutableListMultimap<String, Ad> adsMap = createAdsMap();
